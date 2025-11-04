@@ -1,3 +1,5 @@
+NOTE: This fork has some changes to `core`. To use this fork, just grab a binary release from the main Odin repository and replace the core folder (make sure this fork is synced before doing that).
+
 <p align="center">
     <img src="misc/logo-slim.png" alt="Odin logo" style="width:65%">
     <br/>
