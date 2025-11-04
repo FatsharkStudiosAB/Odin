@@ -1,3 +1,6 @@
+// FATSHARK: Added this build tag because this file is not needed, but it also makes core:log
+// not build on freestanding.
+#+build !freestanding
 package log
 
 import "base:runtime"

@@ -57,7 +57,18 @@ ERROR_FILE_IS_PIPE        :: General_Error.File_Is_Pipe
 ERROR_FILE_IS_NOT_DIR     :: General_Error.Not_Dir
 
 // "Argv" arguments converted to Odin strings
-args := _alloc_command_line_arguments()
+
+// FATSHARK: We changed this from `args := _alloc_command_line_arguments()` to the following. This
+// makes the program not depend on some libs in windows, which is good since we link manually using
+// clang.
+args: []string
+
+get_command_line_arguments :: proc "contextless"() -> []string {
+	if len(args) == 0 {
+		args = _alloc_command_line_arguments()
+	}
+	return args
+}
 
 @(require_results, no_instrumentation)
 get_last_error :: proc "contextless" () -> Error {
