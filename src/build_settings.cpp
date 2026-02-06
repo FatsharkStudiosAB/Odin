@@ -210,6 +210,12 @@ enum BuildModeKind {
 	BuildMode_COUNT,
 };
 
+enum DebugSymbolFormat : u8{
+	DebugSymbolFormat_Default,
+	DebugSymbolFormat_CodeView,
+	DebugSymbolFormat_Dwarf,
+};
+
 enum CommandKind : u64 {
 	Command_run             = 1<<0,
 	Command_build           = 1<<1,
@@ -497,6 +503,7 @@ struct BuildContext {
 	String out_filepath;
 	String resource_filepath;
 	String pdb_filepath;
+	DebugSymbolFormat symbol_format;
 
 	u64 vet_flags;
 	u32 sanitizer_flags;

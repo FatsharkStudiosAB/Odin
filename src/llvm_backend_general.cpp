@@ -64,23 +64,35 @@ gb_internal WORKER_TASK_PROC(lb_init_module_worker_proc) {
 
 		LLVMMetadataRef debug_ref = LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(m->ctx), DEBUG_METADATA_VERSION, true));
 		LLVMAddModuleFlag(m->mod, LLVMModuleFlagBehaviorWarning, "Debug Info Version", 18, debug_ref);
-
-		switch (build_context.metrics.os) {
-		case TargetOs_windows:
+		if(build_context.symbol_format == DebugSymbolFormat_CodeView){
 			LLVMAddModuleFlag(m->mod,
-				LLVMModuleFlagBehaviorWarning,
-				"CodeView", 8,
-				LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(m->ctx), 1, true)));
-			break;
-
-		case TargetOs_darwin:
-			// NOTE(bill): Darwin only supports DWARF2 (that I know of)
+					LLVMModuleFlagBehaviorWarning,
+					"CodeView", 8,
+					LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(m->ctx), 1, true)));
+		} else if(build_context.symbol_format == DebugSymbolFormat_Dwarf){
 			LLVMAddModuleFlag(m->mod,
-				LLVMModuleFlagBehaviorWarning,
-				"Dwarf Version", 13,
-				LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(m->ctx), 2, true)));
-			break;
+					LLVMModuleFlagBehaviorWarning,
+					"Dwarf Version", 13,
+					LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(m->ctx), 2, true)));
+		}else{
+			switch (build_context.metrics.os) {
+			case TargetOs_windows:
+				LLVMAddModuleFlag(m->mod,
+					LLVMModuleFlagBehaviorWarning,
+					"CodeView", 8,
+					LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(m->ctx), 1, true)));
+				break;
+
+			case TargetOs_darwin:
+				// NOTE(bill): Darwin only supports DWARF2 (that I know of)
+				LLVMAddModuleFlag(m->mod,
+					LLVMModuleFlagBehaviorWarning,
+					"Dwarf Version", 13,
+					LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(m->ctx), 2, true)));
+				break;
+			}
 		}
+		
 		m->debug_builder = LLVMCreateDIBuilder(m->mod);
 	}
 
