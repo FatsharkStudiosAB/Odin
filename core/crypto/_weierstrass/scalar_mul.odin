@@ -2,7 +2,6 @@ package _weierstrass
 
 import "core:crypto"
 @(require) import subtle "core:crypto/_subtle"
-@(require) import "core:mem"
 
 pt_scalar_mul :: proc "contextless" (
 	p, a: ^$T,
@@ -23,7 +22,7 @@ pt_scalar_mul :: proc "contextless" (
 	pt_scalar_mul_bytes(p, a, b[:], unsafe_is_vartime)
 
 	if !unsafe_is_vartime {
-		mem.zero_explicit(&b, size_of(b))
+		crypto.zero_explicit(&b, size_of(b))
 	}
 }
 
@@ -69,9 +68,84 @@ pt_scalar_mul_bytes :: proc "contextless" (
 	pt_set(p, &q)
 
 	if !unsafe_is_vartime {
-		mem.zero_explicit(&p_tbl, size_of(p_tbl))
+		crypto.zero_explicit(&p_tbl, size_of(p_tbl))
 		pt_clear_vec([]^T{&q, &tmp})
 	}
+}
+
+pt_double_scalar_mul_generator_vartime :: proc "contextless" (
+	p, q: ^$T,
+	sc_g, sc_q: ^$Q,
+) {
+	// Strauss-Shamir, commonly referred to as the "Shamir trick",
+	// saves half the doublings, relative to doing this the naive way.
+	//
+	// Note: In the unlikely event where we support curves with an
+	// efficent endomorphism (secp256k1), scalarmul + GLV is faster.
+	when T == Point_p256r1 && Q == Scalar_p256r1 {
+		q_tbl: Multiply_Table_p256r1 = ---
+		SC_SZ :: SC_SIZE_P256R1
+	} else when T == Point_p384r1 && Q == Scalar_p384r1 {
+		q_tbl: Multiply_Table_p384r1 = ---
+		SC_SZ :: SC_SIZE_P384R1
+	} else {
+		#panic("weierstrass: invalid curve")
+	}
+
+	sc_q_bytes, sc_g_bytes: [SC_SZ]byte = ---, ---
+	sc_bytes(sc_q_bytes[:], sc_q)
+	sc_bytes(sc_g_bytes[:], sc_g)
+
+	r, tmp: T = ---, ---
+	when crypto.COMPACT_IMPLS == true {
+		pt_generator(&r)
+		when T == Point_p256r1 {
+			g_tbl: Multiply_Table_p256r1 = ---
+		} else when T == Point_p384r1 {
+			g_tbl: Multiply_Table_p384r1 = ---
+		}
+		mul_tbl_set(&g_tbl, &r, true)
+	} else {
+		when T == Point_p256r1 {
+			g_tbl := &Gen_Multiply_Table_p256r1_lo[31]
+		} else when T == Point_p384r1 {
+			g_tbl := &Gen_Multiply_Table_p384r1_lo[47]
+		}
+	}
+	mul_tbl_set(&q_tbl, q, true)
+
+	pt_identity(&r)
+	for i in 0..<SC_SZ {
+		limb_byte_q, limb_byte_g := sc_q_bytes[i], sc_g_bytes[i]
+		hi_q, lo_q := (limb_byte_q >> 4) & 0x0f, limb_byte_q & 0x0f
+		hi_g, lo_g := (limb_byte_g >> 4) & 0x0f, limb_byte_g & 0x0f
+
+		if i != 0 {
+			pt_double(&r, &r)
+			pt_double(&r, &r)
+			pt_double(&r, &r)
+			pt_double(&r, &r)
+		}
+		mul_tbl_lookup_add(&r, &tmp, &q_tbl, u64(hi_q), true)
+		when crypto.COMPACT_IMPLS == true {
+			mul_tbl_lookup_add(&r, &tmp, &g_tbl, u64(hi_g), true)
+		} else {
+			mul_affine_tbl_lookup_add(&r, &tmp, g_tbl, u64(hi_g), true)
+		}
+
+		pt_double(&r, &r)
+		pt_double(&r, &r)
+		pt_double(&r, &r)
+		pt_double(&r, &r)
+		mul_tbl_lookup_add(&r, &tmp, &q_tbl, u64(lo_q), true)
+		when crypto.COMPACT_IMPLS == true {
+			mul_tbl_lookup_add(&r, &tmp, &g_tbl, u64(lo_g), true)
+		} else {
+			mul_affine_tbl_lookup_add(&r, &tmp, g_tbl, u64(lo_g), true)
+		}
+	}
+
+	pt_set(p, &r)
 }
 
 when crypto.COMPACT_IMPLS == true {
@@ -116,7 +190,7 @@ when crypto.COMPACT_IMPLS == true {
 		}
 
 		if !unsafe_is_vartime {
-			mem.zero_explicit(&b, size_of(b))
+			crypto.zero_explicit(&b, size_of(b))
 			pt_clear(&tmp)
 		}
 	}

@@ -39,6 +39,7 @@ package all
 @(require) import chash "core:crypto/hash"
 @(require) import "core:crypto/deoxysii"
 @(require) import "core:crypto/ecdh"
+@(require) import "core:crypto/ecdsa"
 @(require) import "core:crypto/ed25519"
 @(require) import "core:crypto/hkdf"
 @(require) import "core:crypto/hmac"
@@ -117,7 +118,7 @@ package all
 @(require) import "core:prof/spall"
 
 @(require) import "core:os"
-@(require) import "core:os/os2"
+@(require) import "core:os/old"
 
 @(require) import "core:path/slashpath"
 @(require) import "core:path/filepath"

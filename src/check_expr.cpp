@@ -153,13 +153,19 @@ gb_internal bool is_load_directive_call(Ast *call) {
 gb_internal LoadDirectiveResult check_load_directive(CheckerContext *c, Operand *operand, Ast *call, Type *type_hint, bool err_on_not_found);
 
 gb_internal void check_did_you_mean_print(DidYouMeanAnswers *d, char const *prefix = "") {
+	int limit = build_context.did_you_mean_limit;
 	auto results = did_you_mean_results(d);
+	int count = 0;
 	if (results.count != 0) {
 		error_line("\tSuggestion: Did you mean?\n");
 		for (auto const &result : results) {
 			String const &target = result.target;
 			error_line("\t\t%s%.*s\n", prefix, LIT(target));
 			// error_line("\t\t%.*s %td\n", LIT(target), results[i].distance);
+			if (limit > 0 && ++count == limit) {
+				error_line("\t\t... and %td more ...", results.count - limit);
+				break;
+			}
 		}
 	}
 }
@@ -7249,18 +7255,45 @@ gb_internal CallArgumentData check_call_arguments_proc_group(CheckerContext *c, 
 		}
 	}
 
+	// auto print_argument_types = [&]() {
+	// 	error_line("\tGiven argument types: (");
+	// 	isize i = 0;
+	// 	for (Operand const &o : positional_operands) {
+	// 		if (i++ > 0) error_line(", ");
+	// 		gbString type = type_to_string(o.type);
+	// 		defer (gb_string_free(type));
+	// 		error_line("%s", type);
+	// 	}
+	// 	for (Operand const &o : named_operands) {
+	// 		if (i++ > 0) error_line(", ");
+
+	// 		gbString type = type_to_string(o.type);
+	// 		defer (gb_string_free(type));
+
+	// 		if (i < ce->split_args->named.count) {
+	// 			Ast *named_field = ce->split_args->named[i];
+	// 			ast_node(fv, FieldValue, named_field);
+
+	// 			gbString field = expr_to_string(fv->field);
+	// 			defer (gb_string_free(field));
+
+	// 			error_line("%s = %s", field, type);
+	// 		} else {
+	// 			error_line("%s", type);
+	// 		}
+	// 	}
+	// 	error_line(")\n");
+	// };
+
 	auto print_argument_types = [&]() {
-		error_line("\tGiven argument types: (");
+		error_line("\tGiven argument types:\n");
 		isize i = 0;
 		for (Operand const &o : positional_operands) {
-			if (i++ > 0) error_line(", ");
 			gbString type = type_to_string(o.type);
 			defer (gb_string_free(type));
-			error_line("%s", type);
+			error_line("\t • %s\n", type);
 		}
 		for (Operand const &o : named_operands) {
-			if (i++ > 0) error_line(", ");
-
 			gbString type = type_to_string(o.type);
 			defer (gb_string_free(type));
 
@@ -7271,12 +7304,11 @@ gb_internal CallArgumentData check_call_arguments_proc_group(CheckerContext *c, 
 				gbString field = expr_to_string(fv->field);
 				defer (gb_string_free(field));
 
-				error_line("%s = %s", field, type);
+				error_line("\t • %s = %s\n", field, type);
 			} else {
-				error_line("%s", type);
+				error_line("\t • %s\n", type);
 			}
 		}
-		error_line(")\n");
 	};
 
 	if (valids.count == 0) {
@@ -7291,9 +7323,6 @@ gb_internal CallArgumentData check_call_arguments_proc_group(CheckerContext *c, 
 
 		if (procs.count == 0) {
 			procs = proc_group_entities_cloned(c, *operand);
-		}
-		if (procs.count > 0) {
-			error_line("Did you mean to use one of the following:\n");
 		}
 
 		// Try to reduce the list further for `$T: typeid` like parameters
@@ -7390,6 +7419,80 @@ gb_internal CallArgumentData check_call_arguments_proc_group(CheckerContext *c, 
 			spaces[i] = ' ';
 		}
 		spaces[max_spaces] = 0;
+
+		{
+			bool try_addr = false;
+			isize try_addr_idx = -1;
+
+			for_array(i, procs) {
+				if (possibly_ignore_set != 0 && possibly_ignore[i]) {
+					continue;
+				}
+				Entity *proc = procs[i];
+				TokenPos pos = proc->token.pos;
+				Type *t = base_type(proc->type);
+				if (t == t_invalid) continue;
+				GB_ASSERT(t->kind == Type_Proc);
+				if (t->Proc.params && t->Proc.params->Tuple.variables.count > 0) {
+					isize n = gb_min(t->Proc.params->Tuple.variables.count, positional_operands.count);
+					for (isize i = 0; i < n; i++) {
+						Type *dst = t->Proc.params->Tuple.variables[i]->type;
+						Operand src = positional_operands[i];
+						if (check_is_assignable_to(c, &src, dst)) {
+							// okay
+						} else if (check_is_assignable_to(c, &src, type_deref(dst))) {
+							try_addr = true;
+							if (try_addr_idx < 0) {
+								try_addr_idx = i;
+							}
+						}
+					}
+				}
+			}
+
+			if (try_addr) {
+				error_line("  \n");
+				error_line("\tSuggestion:\n");
+				error_line("\t\t%s(", expr_name);
+				isize i = 0;
+				for (Operand const &o : positional_operands) {
+					if (i++ > 0) error_line(", ");
+					gbString expr = expr_to_string(o.expr);
+					defer (gb_string_free(expr));
+
+					if (i-1 == try_addr_idx) {
+						error_line("&");
+					}
+					error_line("%s", expr);
+				}
+				for (Operand const &o : named_operands) {
+					if (i++ > 0) error_line(", ");
+
+					gbString expr = expr_to_string(o.expr);
+					defer (gb_string_free(expr));
+
+					if (i < ce->split_args->named.count) {
+						Ast *named_field = ce->split_args->named[i];
+						ast_node(fv, FieldValue, named_field);
+
+						gbString field = expr_to_string(fv->field);
+						defer (gb_string_free(field));
+
+						error_line("%s = %s", field, expr);
+					} else {
+						error_line("%s", expr);
+					}
+				}
+				error_line(")\n");
+
+				error_line("  \n"); // extra spaces to prevent newlines being consumed by the error handling syste,
+			}
+		}
+
+
+		if (procs.count > 0) {
+			error_line("Did you mean one of the following overloads?\n");
+		}
 
 		for_array(i, procs) {
 			if (possibly_ignore_set != 0 && possibly_ignore[i]) {
