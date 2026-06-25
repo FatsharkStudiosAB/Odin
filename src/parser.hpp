@@ -329,6 +329,9 @@ gb_global char const *proc_calling_convention_strings[ProcCC_MAX] = {
 };
 
 gb_internal ProcCallingConvention default_calling_convention(void) {
+	if (build_context.bedrock) {
+		// return ProcCC_Contextless;
+	}
 	return ProcCC_Odin;
 }
 
@@ -424,9 +427,10 @@ struct AstSplitArgs {
 
 #define AST_KINDS \
 	AST_KIND(Ident,          "identifier",      struct { \
-		Token   token;  \
-		std::atomic<Entity *> entity; \
-		u32     hash;   \
+		Token                 token;    \
+		std::atomic<Entity *> entity;   \
+		u32                   hash;     \
+		InternedString        interned; \
 	}) \
 	AST_KIND(Implicit,       "implicit",        Token) \
 	AST_KIND(Uninit,         "uninitialized value", Token) \
@@ -764,8 +768,14 @@ AST_KIND(_TypeBegin, "", bool) \
 	}) \
 	AST_KIND(DynamicArrayType, "dynamic array type", struct { \
 		Token token; \
-		Ast *elem; \
-		Ast *tag;  \
+		Ast *elem;   \
+		Ast *tag;    \
+	}) \
+	AST_KIND(FixedCapacityDynamicArrayType, "fixed capacity dynamic array type", struct { \
+		Token token;   \
+		Ast *capacity; \
+		Ast *elem;     \
+		Ast *tag;      \
 	}) \
 	AST_KIND(StructType, "struct type", struct { \
 		Scope *scope; \

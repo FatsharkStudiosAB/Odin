@@ -39,7 +39,7 @@ ALWAYS_REPORT_MEMORY  : bool   : #config(ODIN_TEST_ALWAYS_REPORT_MEMORY, false)
 // Treat memory leaks and bad frees as errors.
 FAIL_ON_BAD_MEMORY    : bool   : #config(ODIN_TEST_FAIL_ON_BAD_MEMORY,   false)
 // Specify how much memory each thread allocator starts with.
-PER_THREAD_MEMORY     : int    : #config(ODIN_TEST_THREAD_MEMORY, mem.   ROLLBACK_STACK_DEFAULT_BLOCK_SIZE)
+PER_THREAD_MEMORY     : int    : #config(ODIN_TEST_THREAD_MEMORY, mem.ROLLBACK_STACK_DEFAULT_BLOCK_SIZE)
 // Select a specific set of tests to run by name.
 // Each test is separated by a comma and may optionally include the package name.
 // This may be useful when running tests on multiple packages with `-all-packages`.
@@ -1018,11 +1018,7 @@ To partly mitigate this, redirect STDERR to a file or use the -define:ODIN_TEST_
 	when JSON_REPORT != "" {
 		json_report: JSON
 
-		mode: int
-		when ODIN_OS != .Windows {
-			mode = os.S_IRUSR|os.S_IWUSR|os.S_IRGRP|os.S_IROTH
-		}
-		json_fd, err := os.open(JSON_REPORT, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+		json_fd, err := os.open(JSON_REPORT, {.Write, .Create, .Trunc}, {.Read_User, .Write_User, .Read_Group, .Read_Other})
 		fmt.assertf(err == nil, "unable to open file %q for writing of JSON report, error: %v", JSON_REPORT, err)
 		defer os.close(json_fd)
 
@@ -1041,7 +1037,7 @@ To partly mitigate this, redirect STDERR to a file or use the -define:ODIN_TEST_
 		json_report.success  = total_success_count
 		json_report.duration = finished_in
 
-		json_err := json.marshal_to_writer(os.stream_from_handle(json_fd), json_report, &{ pretty = true })
+		json_err := json.marshal_to_writer(os.to_stream(json_fd), json_report, &{ pretty = true })
 		fmt.assertf(json_err == nil, "Error writing JSON report: %v", json_err)
 	}
 

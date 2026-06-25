@@ -1,5 +1,5 @@
 /*
-Handle-based map using fixed-length arrays.
+Handle-based map using either fixed-length arrays, or exponential arrays from "core:container/xar".
 
 Example:
 	import hm "core:container/handle_map"
@@ -24,9 +24,11 @@ Example:
 		hm.remove(&entities, h1)
 
 		h3 := hm.add(&entities, Entity{pos = {6, 7}})
+		assert(hm.is_valid(entities, h3))
 
 		it := hm.iterator_make(&entities)
 		for e, h in hm.iterate(&it) {
+			assert(hm.is_valid(entities, h))
 			e.pos += {1, 2}
 		}
 	}
@@ -46,9 +48,11 @@ Example:
 		hm.remove(&entities, h1)
 
 		h3 := hm.add(&entities, Entity{pos = {6, 7}})
+		assert(hm.is_valid(entities, h3))
 
 		it := hm.iterator_make(&entities)
 		for e, h in hm.iterate(&it) {
+			assert(hm.is_valid(entities, h))
 			e.pos += {1, 2}
 		}
 	}

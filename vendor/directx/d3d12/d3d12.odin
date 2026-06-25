@@ -174,19 +174,20 @@ PRIMITIVE :: enum i32 {
 }
 
 SRV_DIMENSION :: enum i32 {
-	UNKNOWN          = 0,
-	BUFFER           = 1,
-	TEXTURE1D        = 2,
-	TEXTURE1DARRAY   = 3,
-	TEXTURE2D        = 4,
-	TEXTURE2DARRAY   = 5,
-	TEXTURE2DMS      = 6,
-	TEXTURE2DMSARRAY = 7,
-	TEXTURE3D        = 8,
-	TEXTURECUBE      = 9,
-	TEXTURECUBEARRAY = 10,
-	BUFFEREX         = 11,
+	UNKNOWN                           = 0,
+	BUFFER                            = 1,
+	TEXTURE1D                         = 2,
+	TEXTURE1DARRAY                    = 3,
+	TEXTURE2D                         = 4,
+	TEXTURE2DARRAY                    = 5,
+	TEXTURE2DMS                       = 6,
+	TEXTURE2DMSARRAY                  = 7,
+	TEXTURE3D                         = 8,
+	TEXTURECUBE                       = 9,
+	TEXTURECUBEARRAY                  = 10,
+	BUFFEREX                          = 11,
 	RAYTRACING_ACCELERATION_STRUCTURE = 11,
+	BUFFER_BYTE_OFFSET                = 12,
 }
 
 PFN_DESTRUCTION_CALLBACK :: #type proc "c" (a0: rawptr)
@@ -858,6 +859,8 @@ FEATURE :: enum i32 {
 	APPLICATION_SPECIFIC_DRIVER_STATE	  = 56,
 	BYTECODE_BYPASS_HASH_SUPPORTED	      = 57,
 	SHADER_CACHE_ABI_SUPPORT	          = 61,
+	BARRIER_LAYOUT	                      = 64,
+	OPTIONS22                             = 65,
 }
 
 SHADER_MIN_PRECISION_SUPPORT :: distinct bit_set[SHADER_MIN_PRECISION_SUPPORT_FLAG; u32]
@@ -1309,6 +1312,13 @@ FEATURE_DATA_OPTIONS21 :: struct {
 	ExecuteIndirectTier:               EXECUTE_INDIRECT_TIER,
 	SampleCmpGradientAndBiasSupported: BOOL,
 	ExtendedCommandInfoSupported:      BOOL,
+}
+
+FEATURE_DATA_OPTIONS22 :: struct {
+	ShaderExecutionReorderingActuallyReorders: BOOL,
+	CreateByteOffsetViewsSupported:            BOOL,
+	Max1DDispatchSize:                         u32,
+	Max1DDispatchMeshSize:                     u32,
 }
 
 TIGHT_ALIGNMENT_TIER :: enum i32 {
@@ -1809,6 +1819,13 @@ RAYTRACING_ACCELERATION_STRUCTURE_SRV :: struct {
 	Location: GPU_VIRTUAL_ADDRESS,
 }
 
+BUFFER_SRV_BYTE_OFFSET :: struct {
+	Offset:              u64,
+	Size:                u64,
+	StructureByteStride: u32,
+	Flags:               BUFFER_SRV_FLAGS,
+}
+
 SHADER_RESOURCE_VIEW_DESC :: struct {
 	Format:                  dxgi.FORMAT,
 	ViewDimension:           SRV_DIMENSION,
@@ -1825,6 +1842,7 @@ SHADER_RESOURCE_VIEW_DESC :: struct {
 		TextureCube:                     TEXCUBE_SRV,
 		TextureCubeArray:                TEXCUBE_ARRAY_SRV,
 		RaytracingAccelerationStructure: RAYTRACING_ACCELERATION_STRUCTURE_SRV,
+		BufferByteOffset:                BUFFER_SRV_BYTE_OFFSET,
 	},
 }
 
@@ -1946,26 +1964,36 @@ TEX3D_UAV :: struct {
 	WSize:       u32,
 }
 
+BUFFER_UAV_BYTE_OFFSET :: struct {
+	Offset:               u64,
+	Size:                 u32,
+	StructureByteStride:  u32,
+	CounterOffsetInBytes: u64,
+	Flags:                BUFFER_UAV_FLAGS,
+}
+
 UAV_DIMENSION :: enum i32 {
-	UNKNOWN        = 0,
-	BUFFER         = 1,
-	TEXTURE1D      = 2,
-	TEXTURE1DARRAY = 3,
-	TEXTURE2D      = 4,
-	TEXTURE2DARRAY = 5,
-	TEXTURE3D      = 8,
+	UNKNOWN            = 0,
+	BUFFER             = 1,
+	TEXTURE1D          = 2,
+	TEXTURE1DARRAY     = 3,
+	TEXTURE2D          = 4,
+	TEXTURE2DARRAY     = 5,
+	TEXTURE3D          = 8,
+	BUFFER_BYTE_OFFSET = 9,
 }
 
 UNORDERED_ACCESS_VIEW_DESC :: struct {
 	Format:        dxgi.FORMAT,
 	ViewDimension: UAV_DIMENSION,
 	using _: struct #raw_union {
-		Buffer:         BUFFER_UAV,
-		Texture1D:      TEX1D_UAV,
-		Texture1DArray: TEX1D_ARRAY_UAV,
-		Texture2D:      TEX2D_UAV,
-		Texture2DArray: TEX2D_ARRAY_UAV,
-		Texture3D:      TEX3D_UAV,
+		Buffer:           BUFFER_UAV,
+		Texture1D:        TEX1D_UAV,
+		Texture1DArray:   TEX1D_ARRAY_UAV,
+		Texture2D:        TEX2D_UAV,
+		Texture2DArray:   TEX2D_ARRAY_UAV,
+		Texture3D:        TEX3D_UAV,
+		BufferByteOffset: BUFFER_UAV_BYTE_OFFSET,
 	},
 }
 
@@ -4023,6 +4051,19 @@ IDevice9_VTable :: struct {
 	CreateCommandQueue1:      proc "system" (this: ^IDevice9, pDesc: ^COMMAND_QUEUE_DESC, CreatorID: ^IID, riid: ^IID, ppCommandQueue: ^rawptr) -> HRESULT,
 }
 
+IDevice10_UUID_STRING :: "517F8718-AA66-49F9-B02B-A7AB89C06031"
+IDevice10_UUID := &IID{0x517F8718, 0xAA66, 0x49F9, {0xB0, 0x2B, 0xA7, 0xAB, 0x89, 0xC0, 0x60, 0x31}}
+IDevice10 :: struct #raw_union {
+	#subtype id3d12device9: IDevice9,
+	using id3d12device10_vtable: ^IDevice10_VTable,
+}
+IDevice10_VTable :: struct {
+	using id3d12device9_vtable: IDevice9_VTable,
+	CreateCommittedResource3: proc "system" (this: ^IDevice10, pHeapProperties: ^HEAP_PROPERTIES, HeapFlags: HEAP_FLAGS, pDesc: ^RESOURCE_DESC1, InitialLayout: BARRIER_LAYOUT, pOptimizedClearValue: ^CLEAR_VALUE, pProtectedSession: ^IProtectedResourceSession, NumCastableFormats: u32, pCastableFormats: [^]dxgi.FORMAT, riidResource: ^IID, ppvResource: ^rawptr) -> HRESULT,
+	CreatePlacedResource2:    proc "system" (this: ^IDevice10, pHeap: ^IHeap, HeapOffset: u64, pDesc: ^RESOURCE_DESC1, InitialLayout: BARRIER_LAYOUT, pOptimizedClearValue: ^CLEAR_VALUE, NumCastableFormats: u32, pCastableFormats: [^]dxgi.FORMAT, riid: ^IID, ppvResource: ^rawptr) -> HRESULT,
+	CreateReservedResource2:  proc "system" (this: ^IDevice10, pDesc: ^RESOURCE_DESC, InitialLayout: BARRIER_LAYOUT, pOptimizedClearValue: ^CLEAR_VALUE, pProtectedSession: ^IProtectedResourceSession, NumCastableFormats: u32, pCastableFormats: [^]dxgi.FORMAT , riid: ^IID, ppvResource: ^rawptr) -> HRESULT,
+}
+
 
 ITools_UUID_STRING :: "7071e1f0-e84b-4b33-974f-12fa49de65c5"
 ITools_UUID := &IID{0x7071e1f0, 0xe84b, 0x4b33, {0x97, 0x4f, 0x12, 0xfa, 0x49, 0xde, 0x65, 0xc5}}
@@ -5430,12 +5471,12 @@ TEXTURE_BARRIER_FLAGS :: enum i32 {
 }
 
 BARRIER_SUBRESOURCE_RANGE :: struct {
-	IndexOrFirstMipLevel: uint,
-	NumMipLevels:         uint,
-	FirstArraySlice:      uint,
-	NumArraySlices:       uint,
-	FirstPlane:           uint,
-	NumPlanes:            uint,
+	IndexOrFirstMipLevel: u32,
+	NumMipLevels:         u32,
+	FirstArraySlice:      u32,
+	NumArraySlices:       u32,
+	FirstPlane:           u32,
+	NumPlanes:            u32,
 }
 
 GLOBAL_BARRIER :: struct {
