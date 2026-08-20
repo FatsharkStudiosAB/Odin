@@ -381,6 +381,9 @@ advance_token :: proc(p: ^Parser) -> tokenizer.Token {
 		#partial switch p.curr_tok.kind {
 		case .Comment:
 			consume_comment_groups(p, prev)
+			if p.curr_tok.kind == .Semicolon && p.expr_level > 0 && p.curr_tok.text == "\n" {
+				advance_token(p)
+			}
 		case .Semicolon:
 			if p.expr_level > 0 && p.curr_tok.text == "\n" {
 				advance_token(p)
@@ -1107,6 +1110,7 @@ parse_attribute :: proc(p: ^Parser, tok: tokenizer.Token, open_kind, close_kind:
 	open, close: tokenizer.Token
 
 	if p.curr_tok.kind == .Ident {
+		close = p.curr_tok
 		elem := parse_ident(p)
 		append(&elems, elem)
 	} else {
@@ -1380,15 +1384,8 @@ parse_unrolled_for_loop :: proc(p: ^Parser, inline_tok: tokenizer.Token) -> ^ast
 
 parse_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	#partial switch p.curr_tok.kind {
-	case .Inline:
-		if peek_token_kind(p, .For) {
-			inline_tok := expect_token(p, .Inline)
-			return parse_unrolled_for_loop(p, inline_tok)
-		}
-		fallthrough
 	// Operands
-	case .No_Inline,
-	     .Context, // Also allows for 'context = '
+	case .Context, // Also allows for 'context = '
 	     .Proc,
 	     .Ident,
 	     .Integer, .Float, .Imag,
@@ -2307,10 +2304,6 @@ parse_inlining_or_tailing_operand :: proc(p: ^Parser, lhs: bool, tok: tokenizer.
 	pi := ast.Proc_Inlining.None
 	pt := ast.Proc_Tailing.None
 	#partial switch tok.kind {
-	case .Inline:
-		pi = .Inline
-	case .No_Inline:
-		pi = .No_Inline
 	case .Ident:
 		switch tok.text {
 		case "force_inline":
@@ -2538,10 +2531,6 @@ parse_operand :: proc(p: ^Parser, lhs: bool) -> ^ast.Expr {
 			return te
 		}
 
-	case .Inline, .No_Inline:
-		tok := advance_token(p)
-		return parse_inlining_or_tailing_operand(p, lhs, tok)
-
 	case .Proc:
 		tok := expect_token(p, .Proc)
 
@@ -2648,7 +2637,7 @@ parse_operand :: proc(p: ^Parser, lhs: bool) -> ^ast.Expr {
 		specialization: ^ast.Expr
 		if allow_token(p, .Quo) {
 			specialization = parse_type(p)
-			end = specialization.pos
+			end = specialization.end
 		}
 		if is_blank_ident(type) {
 			error(p, type.pos, "invalid polymorphic type definition with a blank identifier")
@@ -3622,7 +3611,9 @@ parse_binary_expr :: proc(p: ^Parser, lhs: bool, prec_in: int) -> ^ast.Expr {
 			case .If, .When:
 				if p.prev_tok.pos.line < op.pos.line {
 					// NOTE(bill): Check to see if the `if` or `when` is on the same line of the `lhs` condition
-					break loop
+					if p.expr_level <= 0 {
+						break loop
+					}
 				}
 			}
 

@@ -171,6 +171,7 @@ enum Subtarget : u32 {
 	Subtarget_iPhone,
 	Subtarget_iPhoneSimulator,
 	Subtarget_Android,
+	Subtarget_Playdate,
 	
 	Subtarget_COUNT,
 	Subtarget_Invalid,    // NOTE(harold): Must appear after _COUNT as this is not a real subtarget
@@ -181,6 +182,7 @@ gb_global String subtarget_strings[Subtarget_COUNT] = {
 	str_lit("iphone"),
 	str_lit("iphonesimulator"),
 	str_lit("android"),
+	str_lit("playdate"),
 };
 
 
@@ -699,100 +701,100 @@ gb_internal isize MAX_ERROR_COLLECTOR_COUNT(void) {
 gb_global TargetMetrics target_windows_i386 = {
 	TargetOs_windows,
 	TargetArch_i386,
-	4, 4, I386_MAX_ALIGNMENT, 16,
+	4, 4, I386_MAX_ALIGNMENT, 512,
 	str_lit("i386-pc-windows-msvc"),
 };
 gb_global TargetMetrics target_windows_amd64 = {
 	TargetOs_windows,
 	TargetArch_amd64,
-	8, 8, AMD64_MAX_ALIGNMENT, 32,
+	8, 8, AMD64_MAX_ALIGNMENT, 512,
 	str_lit("x86_64-pc-windows-msvc"),
 };
 
 gb_global TargetMetrics target_linux_i386 = {
 	TargetOs_linux,
 	TargetArch_i386,
-	4, 4, I386_MAX_ALIGNMENT, 16,
+	4, 4, I386_MAX_ALIGNMENT, 512,
 	str_lit("i386-pc-linux-gnu"),
 };
 gb_global TargetMetrics target_linux_amd64 = {
 	TargetOs_linux,
 	TargetArch_amd64,
-	8, 8, AMD64_MAX_ALIGNMENT, 32,
+	8, 8, AMD64_MAX_ALIGNMENT, 512,
 	str_lit("x86_64-pc-linux-gnu"),
 };
 gb_global TargetMetrics target_linux_arm64 = {
 	TargetOs_linux,
 	TargetArch_arm64,
-	8, 8, 16, 32,
+	8, 8, 16, 16,
 	str_lit("aarch64-linux-elf"),
 };
 gb_global TargetMetrics target_linux_arm32 = {
 	TargetOs_linux,
 	TargetArch_arm32,
-	4, 4, 8, 16,
+	4, 4, 8, 8,
 	str_lit("arm-unknown-linux-gnueabihf"),
 };
 gb_global TargetMetrics target_linux_riscv64 = {
 	TargetOs_linux,
 	TargetArch_riscv64,
-	8, 8, 16, 32,
+	8, 8, 16, 512,
 	str_lit("riscv64-linux-gnu"),
 };
 
 gb_global TargetMetrics target_darwin_amd64 = {
 	TargetOs_darwin,
 	TargetArch_amd64,
-	8, 8, AMD64_MAX_ALIGNMENT, 32,
+	8, 8, AMD64_MAX_ALIGNMENT, 16,
 	str_lit("x86_64-apple-macosx"), // NOTE: Changes during initialization based on build flags.
 };
 
 gb_global TargetMetrics target_darwin_arm64 = {
 	TargetOs_darwin,
 	TargetArch_arm64,
-	8, 8, 16, 32,
+	8, 8, 16, 16,
 	str_lit("arm64-apple-macosx"), // NOTE: Changes during initialization based on build flags.
 };
 
 gb_global TargetMetrics target_freebsd_i386 = {
 	TargetOs_freebsd,
 	TargetArch_i386,
-	4, 4, I386_MAX_ALIGNMENT, 16,
+	4, 4, I386_MAX_ALIGNMENT, 512,
 	str_lit("i386-unknown-freebsd-elf"),
 };
 
 gb_global TargetMetrics target_freebsd_amd64 = {
 	TargetOs_freebsd,
 	TargetArch_amd64,
-	8, 8, AMD64_MAX_ALIGNMENT, 32,
+	8, 8, AMD64_MAX_ALIGNMENT, 512,
 	str_lit("x86_64-unknown-freebsd-elf"),
 };
 
 gb_global TargetMetrics target_freebsd_arm64 = {
 	TargetOs_freebsd,
 	TargetArch_arm64,
-	8, 8, 16, 32,
+	8, 8, 16, 16,
 	str_lit("aarch64-unknown-freebsd-elf"),
 };
 
 gb_global TargetMetrics target_openbsd_amd64 = {
 	TargetOs_openbsd,
 	TargetArch_amd64,
-	8, 8, AMD64_MAX_ALIGNMENT, 32,
+	8, 8, AMD64_MAX_ALIGNMENT, 512,
 	str_lit("x86_64-unknown-openbsd-elf"),
 };
 
 gb_global TargetMetrics target_netbsd_amd64 = {
 	TargetOs_netbsd,
 	TargetArch_amd64,
-	8, 8, AMD64_MAX_ALIGNMENT, 32,
+	8, 8, AMD64_MAX_ALIGNMENT, 512,
 	str_lit("x86_64-unknown-netbsd-elf"),
 };
 
 gb_global TargetMetrics target_netbsd_arm64 = {
 	TargetOs_netbsd,
 	TargetArch_arm64,
-	8, 8, 16, 32,
+	8, 8, 16, 16,
 	str_lit("aarch64-unknown-netbsd-elf"),
 };
 
@@ -800,21 +802,21 @@ gb_global TargetMetrics target_netbsd_arm64 = {
 gb_global TargetMetrics target_freestanding_wasm32 = {
 	TargetOs_freestanding,
 	TargetArch_wasm32,
-	4, 4, 8, 16,
+	4, 4, 8, 512,
 	str_lit("wasm32-freestanding-js"),
 };
 
 gb_global TargetMetrics target_js_wasm32 = {
 	TargetOs_js,
 	TargetArch_wasm32,
-	4, 4, 8, 16,
+	4, 4, 8, 512,
 	str_lit("wasm32-js-js"),
 };
 
 gb_global TargetMetrics target_wasi_wasm32 = {
 	TargetOs_wasi,
 	TargetArch_wasm32,
-	4, 4, 8, 16,
+	4, 4, 8, 512,
 	str_lit("wasm32-wasi-js"),
 };
 
@@ -822,7 +824,7 @@ gb_global TargetMetrics target_wasi_wasm32 = {
 gb_global TargetMetrics target_orca_wasm32 = {
 	TargetOs_orca,
 	TargetArch_wasm32,
-	4, 4, 8, 16,
+	4, 4, 8, 512,
 	str_lit("wasm32-wasi-js"),
 };
 
@@ -830,21 +832,21 @@ gb_global TargetMetrics target_orca_wasm32 = {
 gb_global TargetMetrics target_freestanding_wasm64p32 = {
 	TargetOs_freestanding,
 	TargetArch_wasm64p32,
-	4, 8, 8, 16,
+	4, 8, 8, 512,
 	str_lit("wasm32-freestanding-js"),
 };
 
 gb_global TargetMetrics target_js_wasm64p32 = {
 	TargetOs_js,
 	TargetArch_wasm64p32,
-	4, 8, 8, 16,
+	4, 8, 8, 512,
 	str_lit("wasm32-js-js"),
 };
 
 gb_global TargetMetrics target_wasi_wasm64p32 = {
 	TargetOs_wasi,
 	TargetArch_wasm32,
-	4, 8, 8, 16,
+	4, 8, 8, 512,
 	str_lit("wasm32-wasi-js"),
 };
 
@@ -853,7 +855,7 @@ gb_global TargetMetrics target_wasi_wasm64p32 = {
 gb_global TargetMetrics target_freestanding_amd64_sysv = {
 	TargetOs_freestanding,
 	TargetArch_amd64,
-	8, 8, AMD64_MAX_ALIGNMENT, 32,
+	8, 8, AMD64_MAX_ALIGNMENT, 512,
 	str_lit("x86_64-pc-none-gnu"),
 	TargetABI_SysV,
 };
@@ -861,7 +863,7 @@ gb_global TargetMetrics target_freestanding_amd64_sysv = {
 gb_global TargetMetrics target_freestanding_amd64_win64 = {
 	TargetOs_freestanding,
 	TargetArch_amd64,
-	8, 8, AMD64_MAX_ALIGNMENT, 32,
+	8, 8, AMD64_MAX_ALIGNMENT, 512,
 	str_lit("x86_64-pc-windows-msvc"),
 	TargetABI_Win64,
 };
@@ -869,7 +871,7 @@ gb_global TargetMetrics target_freestanding_amd64_win64 = {
 gb_global TargetMetrics target_freestanding_amd64_mingw = {
 	TargetOs_freestanding,
 	TargetArch_amd64,
-	8, 8, AMD64_MAX_ALIGNMENT, 32,
+	8, 8, AMD64_MAX_ALIGNMENT, 512,
 	str_lit("x86_64-pc-windows-gnu"),
 	TargetABI_Win64,
 };
@@ -878,20 +880,20 @@ gb_global TargetMetrics target_freestanding_amd64_mingw = {
 gb_global TargetMetrics target_freestanding_arm64 = {
 	TargetOs_freestanding,
 	TargetArch_arm64,
-	8, 8, 16, 32,
+	8, 8, 16, 16,
 	str_lit("aarch64-none-elf"),
 };
 
 gb_global TargetMetrics target_freestanding_arm32 = {
 	TargetOs_freestanding,
 	TargetArch_arm32,
-	4, 4, 8, 16,
-	str_lit("arm-unknown-unknown-gnueabihf"),
+	4, 4, 8, 8,
+	str_lit("arm-none-eabihf"),
 };
 gb_global TargetMetrics target_freestanding_riscv64 = {
 	TargetOs_freestanding,
 	TargetArch_riscv64,
-	8, 8, 16, 32,
+	8, 8, 16, 512,
 	str_lit("riscv64-unknown-gnu"),
 };
 
@@ -1964,6 +1966,19 @@ gb_internal void init_build_context(TargetMetrics *cross_target, Subtarget subta
 			bc->no_plt = LLVM_VERSION_MAJOR >= 19;
 			break;
 		}
+	} else if (subtarget == Subtarget_Playdate) {
+		// Uses generic triplet and arch to avoid issues with the playdates
+		// single precision float fpu as well as issues with function lowering
+		// when using the thumbv7em triplet.
+		bc->metrics.target_triplet = str_lit("arm-unknown-unknown-gnueabihf");
+		//no-movt required as playdate only handles R_ARM_ABS32 relocations
+		String const playdate_features = str_lit("no-movt,armv7e-m,thumb2,m7,fpregs");
+
+		if(bc->target_features_string.len > 0) {
+			bc->target_features_string = concatenate3_strings(permanent_allocator(), playdate_features, str_lit(","), bc->target_features_string);
+		} else {
+			bc->target_features_string = playdate_features;
+		}
 	}
 
 	if (metrics->os == TargetOs_windows ||
@@ -2404,12 +2419,32 @@ gb_internal bool init_build_paths(String init_filename) {
 		GB_PANIC("Unhandled build mode/target combination.\n");
 	}
 
+	bool output_should_be_directory = false;
+
 	if (bc->out_filepath.len > 0) {
 		bc->build_paths[BuildPath_Output] = path_from_string(ha, bc->out_filepath);
-		if (build_context.metrics.os == TargetOs_windows) {
-			String output_file = path_to_string(ha, bc->build_paths[BuildPath_Output]);
-			defer (gb_free(ha, output_file.text));
-			if (path_is_directory(bc->build_paths[BuildPath_Output])) {
+		bool output_is_directory = path_is_directory(bc->build_paths[BuildPath_Output]);
+
+		String output_file = path_to_string(ha, bc->build_paths[BuildPath_Output]);
+		defer (gb_free(ha, output_file.text));
+
+		// NOTE(Jeroen): For LLVM-IR, we want `-out` to specify a directory.
+		//               For other outputs we expect it to be a file path.
+		if (build_context.build_mode == BuildMode_LLVM_IR) {
+			if (!output_is_directory) {
+				gb_printf_err("Output path %.*s should be a directory for LLVM-IR output.\n", LIT(output_file));
+				return false;
+			}
+			output_should_be_directory = true;
+
+		} else if (build_context.build_mode == BuildMode_Object) {
+			// Both directory or filename prefix allowed
+
+		} else if (build_context.build_mode == BuildMode_Assembly) {
+			// Both directory or filename prefix allowed
+
+		} else if (build_context.metrics.os == TargetOs_windows) {
+			if (output_is_directory) {
 				gb_printf_err("Output path %.*s is a directory.\n", LIT(output_file));
 				return false;
 			} else if (bc->build_paths[BuildPath_Output].ext.len == 0) {
@@ -2520,7 +2555,11 @@ gb_internal bool init_build_paths(String init_filename) {
 	// Do we have an extension? We might not if the output filename was supplied.
 	if (bc->build_paths[BuildPath_Output].ext.len == 0) {
 		if (build_context.metrics.os == TargetOs_windows || is_arch_wasm() || build_context.build_mode != BuildMode_Executable) {
-			bc->build_paths[BuildPath_Output].ext = copy_string(ha, output_extension);
+
+			// NOTE(Jeroen): If build mode is LLVM_IR and a custom output was set
+			if (!output_should_be_directory) {
+				bc->build_paths[BuildPath_Output].ext = copy_string(ha, output_extension);
+			}
 		}
 	}
 
@@ -2528,7 +2567,7 @@ gb_internal bool init_build_paths(String init_filename) {
 	defer (gb_free(ha, output_file.text));
 
 	// Check if output path is a directory.
-	if (path_is_directory(bc->build_paths[BuildPath_Output])) {
+	if (!output_should_be_directory && path_is_directory(bc->build_paths[BuildPath_Output])) {
 		gb_printf_err("Output path %.*s is a directory.\n", LIT(output_file));
 		return false;
 	}

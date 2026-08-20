@@ -284,7 +284,7 @@ void typeid_hash_context_init(TypeidHashContext *hash_ctx) {
 u64 rotate_left64(u64 x, u64 k) {
 	static u64 const n = 64;
 	u64 s = k & (n-1);
-	return (x<<s) | (x>>(n-2));
+	return (x<<s) | (x>>(n-s));
 }
 
 void sip_compress(SipHashContext *sip) {
@@ -516,9 +516,17 @@ gb_internal u64 type_hash_canonical_type(Type *type) {
 		return prev_hash;
 	}
 
+	// NOTE(tf2spi): Unwrap type aliases similar to are_types_identical*
+	Type *type_unaliased = type;
+	if (type->kind == Type_Named) {
+		Entity *e = type->Named.type_name;
+		if (e->TypeName.is_type_alias) {
+			type_unaliased = type->Named.base;
+		}
+	}
 	TypeWriter w = {};
 	type_writer_make_hasher(&w, &w.hash_ctx);
-	write_type_to_canonical_string(&w, type);
+	write_type_to_canonical_string(&w, type_unaliased);
 	u64 hash = typeid_hash_context_fini(&w.hash_ctx);
 	if (build_context.webkit_switch_workaround) {
 		// Clear the top bit so every `typeid` is in [1, 2^63). A `switch` over a
@@ -565,7 +573,8 @@ gb_internal gbString string_canonical_entity_name(gbAllocator allocator, Entity 
 
 gb_internal void write_canonical_parent_prefix(TypeWriter *w, Entity *e) {
 	GB_ASSERT(e != nullptr);
-	if (e->kind == Entity_Procedure || e->kind == Entity_TypeName || e->kind == Entity_Variable) {
+	if (e->kind == Entity_Procedure || e->kind == Entity_AsmTemplate ||
+	    e->kind == Entity_TypeName  || e->kind == Entity_Variable) {
 		if (e->kind == Entity_Procedure && (e->Procedure.is_export || e->Procedure.is_foreign)) {
 			// no prefix
 			return;
@@ -732,6 +741,7 @@ write_base_name:
 		// For debug symbols only
 		/*fallthrough*/
 	case Entity_Procedure:
+	case Entity_AsmTemplate:
 	case Entity_Variable:
 		type_writer_append(w, e->token.string.text, e->token.string.len);
 		if (is_type_polymorphic(e->type)) {
@@ -971,6 +981,12 @@ gb_internal void write_type_to_canonical_string(TypeWriter *w, Type *type) {
 		if (type->Proc.result_count > 0) {
 			type_writer_appendc(w, "->");
 			write_canonical_params(w, type->Proc.results);
+		}
+		if (type->Proc.diverging) {
+			type_writer_appendc(w, "!");
+		}
+		if (type->Proc.optional_ok) {
+			type_writer_appendc(w, "#optional_ok");
 		}
 		return;
 

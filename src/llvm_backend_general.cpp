@@ -16,6 +16,41 @@ gb_global isize lb_global_type_info_member_offsets_index = 0;
 gb_global isize lb_global_type_info_member_usings_index  = 0;
 gb_global isize lb_global_type_info_member_tags_index    = 0;
 
+// A backend worker must not end the process: its siblings are still inside LLVM, and tearing the
+// process down under them is what turns a reported error into a crash. A failing worker records the
+// failure and returns; the driver exits once the pool has drained. Work stealing can run a task on
+// the main thread, so this must not depend on which thread is executing
+gb_global std::atomic<bool> lb_worker_failure;
+
+gb_internal void lb_record_worker_failure(void) {
+	lb_worker_failure.store(true, std::memory_order_release);
+}
+
+gb_internal void lb_exit_if_worker_failed(void) {
+	if (lb_worker_failure.load(std::memory_order_acquire)) {
+		exit_with_errors();
+	}
+}
+
+// Without a handler installed, LLVM prints an error of its own and calls exit(1) from whichever
+// thread it is on. 
+gb_internal void lb_llvm_diagnostic_handler(LLVMDiagnosticInfoRef di, void *) {
+	char *description = LLVMGetDiagInfoDescription(di);
+	defer (LLVMDisposeMessage(description));
+
+	switch (LLVMGetDiagInfoSeverity(di)) {
+	case LLVMDSError:
+		gb_printf_err("LLVM Error: %s\n", description);
+		lb_record_worker_failure();
+		break;
+	case LLVMDSWarning:
+		gb_printf_err("LLVM Warning: %s\n", description);
+		break;
+	default:
+		break;
+	}
+}
+
 gb_internal WORKER_TASK_PROC(lb_init_module_worker_proc) {
 	lbModule *m = cast(lbModule *)data;
 	Checker *c = m->checker;
@@ -58,6 +93,7 @@ gb_internal WORKER_TASK_PROC(lb_init_module_worker_proc) {
 
 	m->module_name = module_name;
 	m->ctx = LLVMContextCreate();
+	LLVMContextSetDiagnosticHandler(m->ctx, lb_llvm_diagnostic_handler, nullptr);
 	m->mod = LLVMModuleCreateWithNameInContext(m->module_name, m->ctx);
 	// m->debug_builder = nullptr;
 	if (build_context.no_plt) {
@@ -177,10 +213,6 @@ gb_internal bool lb_init_generator(lbGenerator *gen, Checker *c) {
 
 	String init_fullpath = c->parser->init_fullpath;
 	linker_data_init(gen, &c->info, init_fullpath);
-
-	#if defined(GB_SYSTEM_OSX) && (LLVM_VERSION_MAJOR < 14)
-	linker_enable_system_library_linking(gen);
-	#endif
 
 	gen->info = &c->info;
 
@@ -346,6 +378,29 @@ gb_internal lbLoopData lb_loop_start(lbProcedure *p, isize count, Type *index_ty
 	return data;
 }
 
+gb_internal lbLoopData lb_loop_start_runtime(lbProcedure *p, lbValue count) {
+	lbLoopData data = {};
+
+	lbValue max = count;
+
+	data.idx_addr = lb_add_local_generated(p, count.type, true);
+
+	data.body = lb_create_block(p, "loop.body");
+	data.done = lb_create_block(p, "loop.done");
+	data.loop = lb_create_block(p, "loop.loop");
+
+	lb_emit_jump(p, data.loop);
+	lb_start_block(p, data.loop);
+
+	data.idx = lb_addr_load(p, data.idx_addr);
+
+	lbValue cond = lb_emit_comp(p, Token_Lt, data.idx, max);
+	lb_emit_if(p, cond, data.body, data.done);
+	lb_start_block(p, data.body);
+
+	return data;
+}
+
 gb_internal void lb_loop_end(lbProcedure *p, lbLoopData const &data) {
 	if (data.idx_addr.addr.value != nullptr) {
 		lb_emit_increment(p, data.idx_addr.addr);
@@ -357,7 +412,7 @@ gb_internal void lb_loop_end(lbProcedure *p, lbLoopData const &data) {
 
 gb_internal void lb_make_global_private_const(LLVMValueRef global_data) {
 	LLVMSetLinkage(global_data, LLVMLinkerPrivateLinkage);
-	// LLVMSetUnnamedAddress(global_data, LLVMGlobalUnnamedAddr);
+	LLVMSetUnnamedAddress(global_data, LLVMGlobalUnnamedAddr);
 	LLVMSetGlobalConstant(global_data, true);
 }
 gb_internal void lb_make_global_private_const(lbAddr const &addr) {
@@ -471,6 +526,27 @@ gb_internal LLVMValueRef llvm_const_insert_value(lbModule *m, LLVMValueRef agg, 
 	}
 	GB_ASSERT(LLVMIsConstant(extracted_value));
 	return extracted_value;
+}
+
+gb_internal LLVMValueRef llvm_const_insert_value_with_rebuild(lbModule *m, LLVMValueRef agg, LLVMValueRef val, unsigned *indices, isize count) {
+	GB_ASSERT(LLVMIsConstant(agg));
+	GB_ASSERT(LLVMIsConstant(val));
+	GB_ASSERT(count > 0);
+
+	unsigned value_count = LLVMCountStructElementTypes(LLVMTypeOf(agg));
+	LLVMValueRef *values = gb_alloc_array(heap_allocator(), LLVMValueRef, value_count);
+	defer (gb_free(heap_allocator(), values));
+
+	for (unsigned i = 0; i < value_count; i++) {
+		values[i] = llvm_const_extract_value(m, agg, i);
+	}
+	if (count == 1) {
+		values[indices[0]] = val;
+	} else {
+		values[indices[0]] = llvm_const_insert_value_with_rebuild(m, values[indices[0]], val, indices+1, count-1);
+	}
+
+	return LLVMConstStructInContext(m->ctx, values, value_count, true);
 }
 
 
@@ -588,6 +664,97 @@ gb_internal lbAddr lb_addr_soa_variable(lbValue addr, lbValue index, Ast *index_
 	return v;
 }
 
+// lbAddr_SoaVariable for the element pointed by an #soa pointer,
+// unpacked from the ptr's {^container, index} pair
+//
+// the nullptr index_expr is deliberate, there is no source index expression,
+// the index was already bounds checked when the pointer was formed (e.g. p := &soa[i])
+gb_internal lbAddr lb_addr_soa_variable_from_soa_ptr(lbProcedure *p, lbValue soa_ptr) {
+	GB_ASSERT_MSG(is_type_soa_pointer(soa_ptr.type), "%s", type_to_string(soa_ptr.type));
+	return lb_addr_soa_variable(lb_emit_struct_ev(p, soa_ptr, 0), lb_emit_struct_ev(p, soa_ptr, 1), nullptr);
+}
+
+// pointer to the index element of the field_index component
+//
+// the returned pointer type depends on the soa kind (because the field types do):
+// ^T for StructSoa_Fixed (field is [N]T array), but [^]T for the slice and dynamic
+// kinds (field is the [^]T this offsets);
+// loads and stores work with either, but an lbAddr must not hold the multipointer,
+// so use lb_addr_soa_field_elem to build an lbAddr from this
+gb_internal lbValue lb_soa_field_elem_ptr(lbProcedure *p, lbValue soa_ptr, i32 field_index, lbValue index) {
+	Type *t = base_type(type_deref(soa_ptr.type));
+	GB_ASSERT_MSG(t->kind == Type_Struct && t->Struct.soa_kind != StructSoa_None, "%s", type_to_string(t));
+
+	lbValue field = lb_emit_struct_ep(p, soa_ptr, field_index);
+	if (t->Struct.soa_kind == StructSoa_Fixed) {
+		return lb_emit_array_ep(p, field, index);
+	}
+	return lb_emit_ptr_offset(p, lb_emit_load(p, field), index);
+}
+
+// the same address as lb_soa_field_elem_ptr, for a component index only known at runtime,
+// this is array-element #soa only, unlike lb_soa_field_elem_ptr which serves any soa kind
+//
+// Note: the caller bounds checks component_index if needed
+gb_internal lbValue lb_soa_array_component_elem_ptr(lbProcedure *p, lbValue soa_ptr, lbValue component_index, lbValue elem_index, i64 component_count) {
+	Type *t = base_type(type_deref(soa_ptr.type));
+	GB_ASSERT_MSG(t->kind == Type_Struct && t->Struct.soa_kind != StructSoa_None, "%s", type_to_string(t));
+	GB_ASSERT_MSG(base_type(t->Struct.soa_elem)->kind == Type_Array,
+	              "indexing a component at runtime needs uniformly typed fields, got element %s",
+	              type_to_string(t->Struct.soa_elem));
+	if (component_count == 0) {
+		// a [0]T element has no components, nor does its soa struct have a field to get a ptr to;
+		// emit a typed nil so that code is well formed;
+		// callers either check bounds (driect indexing) or skip the code (e.g. range loop over array element),
+		// so this is never dereferenced when bounds checks are on;
+		// with bounds checks off the access is out of bounds by definition
+		return lb_const_nil(p->module, alloc_type_pointer(base_type(t->Struct.soa_elem)->Array.elem));
+	}
+	// do chain select between the component pointers;
+	// an element array holds at most 4 components, so this is at most 3 compares and 3 selects (branchless), 
+	// and it is folded if j is resolved to constant after inlining/unrolling;
+	// TODO: more efficient codegen can be done, most definitely for fixed kind, possibly for slice/dynamic,
+	// (but this works for both kinds)
+	//
+	// lb_emit_select evaluates both arms, so every candidate address is
+	// formed; only the selected one is dereferenced	
+	lbValue ptr = lb_soa_field_elem_ptr(p, soa_ptr, 0, elem_index);
+	for (i64 component = 1; component < component_count; component++) {
+		lbValue candidate = lb_soa_field_elem_ptr(p, soa_ptr, cast(i32)component, elem_index);
+		lbValue is_component = lb_emit_comp(p, Token_CmpEq, component_index, lb_const_int(p->module, t_int, component));
+		ptr = lb_emit_select(p, is_component, candidate, ptr);
+	}
+	return ptr;
+}
+
+// lbAddr over an lb_soa_field_elem_ptr pointer, retyped ^T when it came as [^]T
+gb_internal lbAddr lb_addr_soa_field_elem(lbValue ptr) {
+	if (is_type_multi_pointer(ptr.type)) {
+		ptr.type = alloc_type_multi_pointer_to_pointer(ptr.type);
+	}
+	return lb_addr(ptr);
+}
+
+// bounds check for an #soa element index
+gb_internal void lb_emit_soa_index_bounds_check(lbProcedure *p, lbValue soa_ptr, lbValue index, Ast *index_expr) {
+	if (index_expr == nullptr) {
+		return;
+	}
+	Type *t = base_type(type_deref(soa_ptr.type));
+	GB_ASSERT(t->kind == Type_Struct && t->Struct.soa_kind != StructSoa_None);
+	if (lb_is_const(index) && t->Struct.soa_kind == StructSoa_Fixed) {
+		return;
+	}
+
+	lbValue len = {};
+	if (t->Struct.soa_kind == StructSoa_Fixed) {
+		len = lb_const_int(p->module, t_int, t->Struct.soa_count);
+	} else {
+		len = lb_soa_struct_len(p, soa_ptr);
+	}
+	lb_emit_bounds_check(p, ast_token(index_expr), index, len);
+}
+
 gb_internal lbAddr lb_addr_swizzle(lbValue addr, Type *array_type, u8 swizzle_count, u8 swizzle_indices[4]) {
 	GB_ASSERT(is_type_array(array_type) || is_type_simd_vector(array_type));
 	GB_ASSERT(1 < swizzle_count && swizzle_count <= 4);
@@ -603,6 +770,16 @@ gb_internal lbAddr lb_addr_swizzle_large(lbValue addr, Type *array_type, Slice<i
 	lbAddr v = {lbAddr_SwizzleLarge, addr};
 	v.swizzle_large.type = array_type;
 	v.swizzle_large.indices = swizzle_indices;
+	return v;
+}
+
+gb_internal lbAddr lb_addr_swizzle_soa(lbValue addr, lbValue index, Ast *index_expr, Type *type, Slice<i32> const &swizzle_indices) {
+	GB_ASSERT(swizzle_indices.count > 0);
+	lbAddr v = {lbAddr_SwizzleSoa, addr};
+	v.swizzle_soa.index = index;
+	v.swizzle_soa.index_expr = index_expr;
+	v.swizzle_soa.type = type;
+	v.swizzle_soa.indices = swizzle_indices;
 	return v;
 }
 
@@ -634,6 +811,13 @@ gb_internal Type *lb_addr_type(lbAddr const &addr) {
 		return addr.swizzle.type;
 	case lbAddr_SwizzleLarge:
 		return addr.swizzle_large.type;
+	case lbAddr_SwizzleSoa:
+		return addr.swizzle_soa.type;
+	case lbAddr_SoaVariable:
+		// deliberately the container type (#soa[N]T), not the element type the addr denotes;
+		// lb_soa_variable_make_pointer and lb_build_assign_stmt depend on this,
+		// if this gets changed to Struct.soa_elem, these must be fixed with it.
+		return type_deref(addr.addr.type);
 	case lbAddr_Context:
 		if (addr.ctx.sel.index.count > 0) {
 			Type *t = t_context;
@@ -658,6 +842,17 @@ gb_internal lbValue lb_make_soa_pointer(lbProcedure *p, Type *type, lbValue cons
 	return lb_addr_load(p, v);
 }
 
+// the soa pointer denoting an lbAddr_SoaVariable element is the only pointer the
+// soa element can have; the generic lb_addr_get_ptr deliberately panics for this kind
+gb_internal lbValue lb_soa_variable_make_pointer(lbProcedure *p, lbAddr const &addr) {
+	GB_ASSERT(addr.kind == lbAddr_SoaVariable);
+	// lb_addr_type on an SoaVariable returns the container type
+	// (see the SoaVariable case in lb_addr_type),
+	// which is what the soa pointer is parameterized by
+	Type *soa_ptr_type = alloc_type_soa_pointer(lb_addr_type(addr));
+	return lb_make_soa_pointer(p, soa_ptr_type, addr.addr, addr.soa.index);
+}
+
 gb_internal lbValue lb_addr_get_ptr(lbProcedure *p, lbAddr const &addr) {
 	if (addr.addr.value == nullptr) {
 		GB_PANIC("Illegal addr -> nullptr");
@@ -669,12 +864,10 @@ gb_internal lbValue lb_addr_get_ptr(lbProcedure *p, lbAddr const &addr) {
 		return lb_internal_dynamic_map_get_ptr(p, addr.addr, addr.map.key);
 
 	case lbAddr_SoaVariable:
-		{
-			Type *soa_ptr_type = alloc_type_soa_pointer(lb_addr_type(addr));
-			return lb_address_from_load_or_generate_local(p, lb_make_soa_pointer(p, soa_ptr_type, addr.addr, addr.soa.index));
-			// TODO(bill): FIX THIS HACK
-			// return lb_address_from_load(p, lb_addr_load(p, addr));
-		}
+		// use lb_addr_load/lb_addr_store or lb_soa_field_elem_ptr for a single component;
+		// callers that need the soa pointer get it via lb_soa_variable_make_pointer
+		GB_PANIC("lbAddr_SoaVariable should be handled elsewhere");
+		break;
 
 	case lbAddr_Context:
 		GB_PANIC("lbAddr_Context should be handled elsewhere");
@@ -686,6 +879,10 @@ gb_internal lbValue lb_addr_get_ptr(lbProcedure *p, lbAddr const &addr) {
 
 	case lbAddr_SwizzleLarge:
 		GB_PANIC("lbAddr_SwizzleLarge should be handled elsewhere");
+		break;
+
+	case lbAddr_SwizzleSoa:
+		GB_PANIC("lbAddr_SwizzleSoa should be handled elsewhere");
 		break;
 	}
 
@@ -1236,6 +1433,28 @@ gb_internal void lb_addr_store(lbProcedure *p, lbAddr addr, lbValue value) {
 			}
 		}
 		return;
+	} else if (addr.kind == lbAddr_SwizzleSoa) {
+		GB_ASSERT(value.value != nullptr);
+		value = lb_emit_conv(p, value, lb_addr_type(addr));
+
+		lb_emit_soa_index_bounds_check(p, addr.addr, addr.swizzle_soa.index, addr.swizzle_soa.index_expr);
+
+		TEMPORARY_ALLOCATOR_GUARD();
+
+		isize n = addr.swizzle_soa.indices.count;
+		lbValue src = lb_address_from_load_or_generate_local(p, value);
+		auto src_loads = slice_make<lbValue>(temporary_allocator(), n);
+		auto dst_ptrs  = slice_make<lbValue>(temporary_allocator(), n);
+		for (isize i = 0; i < n; i++) {
+			src_loads[i] = lb_emit_load(p, lb_emit_array_epi(p, src, i));
+		}
+		for (isize i = 0; i < n; i++) {
+			dst_ptrs[i] = lb_soa_field_elem_ptr(p, addr.addr, addr.swizzle_soa.indices[i], addr.swizzle_soa.index);
+		}
+		for (isize i = 0; i < n; i++) {
+			lb_emit_store(p, dst_ptrs[i], src_loads[i]);
+		}
+		return;
 	} else if (addr.kind == lbAddr_SwizzleLarge) {
 		GB_ASSERT(value.value != nullptr);
 		value = lb_emit_conv(p, value, lb_addr_type(addr));
@@ -1286,7 +1505,9 @@ gb_internal void lb_emit_store(lbProcedure *p, lbValue ptr, lbValue value) {
 
 	Type *a = type_deref(ptr.type, true);
 	if (LLVMIsNull(value.value)) {
-		LLVMTypeRef src_t = llvm_addr_type(p->module, ptr);
+		// used to be llvm_addr_type: for a multi-pointer typed ptr the latter is `ptr`,
+		// and ConstNull of it would store 8 bytes over an element of any size
+		LLVMTypeRef src_t = lb_type(p->module, a);
 		if (is_type_proc(a)) {
 			LLVMTypeRef rawptr_type = lb_type(p->module, t_rawptr);
 			LLVMTypeRef rawptr_ptr_type = LLVMPointerType(rawptr_type, 0);
@@ -1374,10 +1595,7 @@ gb_internal lbValue lb_emit_load(lbProcedure *p, lbValue value) {
 		LLVMValueRef v = OdinLLVMBuildLoad(p, lb_type(p->module, t), value.value);
 		return lbValue{v, t};
 	} else if (is_type_soa_pointer(value.type)) {
-		lbValue ptr = lb_emit_struct_ev(p, value, 0);
-		lbValue idx = lb_emit_struct_ev(p, value, 1);
-		lbAddr addr = lb_addr_soa_variable(ptr, idx, nullptr);
-		return lb_addr_load(p, addr);
+		return lb_addr_load(p, lb_addr_soa_variable_from_soa_ptr(p, value));
 	}
 
 	GB_ASSERT_MSG(is_type_pointer(value.type), "%s", type_to_string(value.type));
@@ -1612,6 +1830,17 @@ gb_internal lbValue lb_addr_load(lbProcedure *p, lbAddr const &addr) {
 			}
 		}
 		return lb_addr_load(p, res);
+	} else if (addr.kind == lbAddr_SwizzleSoa) {
+		lb_emit_soa_index_bounds_check(p, addr.addr, addr.swizzle_soa.index, addr.swizzle_soa.index_expr);
+
+		// gather one component per field, no vector path like for lbAddr_Swizzle;
+		lbAddr res = lb_add_local_generated(p, addr.swizzle_soa.type, false);
+		for (isize i = 0; i < addr.swizzle_soa.indices.count; i++) {
+			lbValue src = lb_soa_field_elem_ptr(p, addr.addr, addr.swizzle_soa.indices[i], addr.swizzle_soa.index);
+			lbValue dst = lb_emit_array_epi(p, res.addr, i);
+			lb_emit_store(p, dst, lb_emit_load(p, src));
+		}
+		return lb_addr_load(p, res);
 	}  else if (addr.kind == lbAddr_SwizzleLarge) {
 		Type *array_type = base_type(addr.swizzle_large.type);
 		GB_ASSERT(array_type->kind == Type_Array);
@@ -1659,12 +1888,14 @@ gb_internal lbValue lb_emit_union_tag_ptr(lbProcedure *p, lbValue u) {
 	unsigned element_count = LLVMCountStructElementTypes(uvt);
 	GB_ASSERT_MSG(element_count >= 2, "element_count=%u (%s) != (%s)", element_count, type_to_string(ut), LLVMPrintTypeToString(uvt));
 
+
 	LLVMValueRef ptr = u.value;
 	ptr = LLVMBuildPointerCast(p->builder, ptr, LLVMPointerType(uvt, 0), "");
 
 	lbValue tag_ptr = {};
 	tag_ptr.value = LLVMBuildStructGEP2(p->builder, uvt, ptr, 1, "");
 	tag_ptr.type = alloc_type_pointer(tag_type);
+	tag_ptr.value = LLVMBuildPointerCast(p->builder, tag_ptr.value, lb_type(p->module, tag_ptr.type), "");
 	return tag_ptr;
 }
 
@@ -1774,12 +2005,14 @@ gb_internal LLVMTypeRef lb_type_internal_for_procedures_raw(lbModule *m, Type *t
 	GB_ASSERT(type->kind == Type_Proc);
 
 	mutex_lock(&m->func_raw_types_mutex);
-	defer (mutex_unlock(&m->func_raw_types_mutex));
 
 	LLVMTypeRef *found = map_get(&m->func_raw_types, type);
 	if (found) {
+		mutex_unlock(&m->func_raw_types_mutex);
 		return *found;
 	}
+
+	mutex_unlock(&m->func_raw_types_mutex);
 
 	unsigned param_count = 0;
 
@@ -1889,7 +2122,9 @@ gb_internal LLVMTypeRef lb_type_internal_for_procedures_raw(lbModule *m, Type *t
 	              "\n\tFuncTypeCtx: %p\n\tCurrentCtx:  %p\n\tGlobalCtx:   %p",
 	              LLVMGetTypeContext(new_abi_fn_type), m->ctx);
 
+	mutex_lock(&m->func_raw_types_mutex);
 	map_set(&m->func_raw_types, type, new_abi_fn_type);
+	mutex_unlock(&m->func_raw_types_mutex);
 
 	return new_abi_fn_type;
 }
@@ -2414,8 +2649,9 @@ gb_internal LLVMTypeRef lb_type_internal(lbModule *m, Type *type) {
 			i64 full_type_align = type_align_of(type);
 			GB_ASSERT(full_type_size % full_type_align == 0);
 
-			if (type->Struct.is_raw_union) {
+			bool requires_packing = type->Struct.is_packed;
 
+			if (type->Struct.is_raw_union) {
 				lbStructFieldRemapping field_remapping = {};
 				slice_init(&field_remapping, permanent_allocator(), 1);
 
@@ -2423,10 +2659,26 @@ gb_internal LLVMTypeRef lb_type_internal(lbModule *m, Type *type) {
 				fields[0] = lb_type_padding_filler(m, full_type_size, full_type_align);
 				field_remapping[0] = 0;
 
-				LLVMTypeRef struct_type = LLVMStructTypeInContext(ctx, fields, gb_count_of(fields), false);
+				LLVMTypeRef struct_type = LLVMStructTypeInContext(ctx, fields, gb_count_of(fields), requires_packing);
 				map_set(&m->struct_field_remapping, cast(void *)struct_type, field_remapping);
 				map_set(&m->struct_field_remapping, cast(void *)type, field_remapping);
 				return struct_type;
+			}
+
+			bool is_soa_struct = type->Struct.soa_kind != StructSoa_None;
+			LLVMTypeRef named_struct_type = nullptr;
+			if (is_soa_struct) {
+				// NOTE(bill): SOA structs are anonymous and may be recursive
+				// (e.g. `#soa[]T` where `T` itself contains a field of type
+				// `#soa[]T`). Register an opaque named struct up front so that any
+				// recursive field references resolve to it instead of recursing
+				// infinitely.
+				gbString soa_name = temp_canonical_string(type);
+				named_struct_type = LLVMGetTypeByName(m->mod, soa_name);
+				if (named_struct_type == nullptr) {
+					named_struct_type = LLVMStructCreateNamed(ctx, soa_name);
+				}
+				map_set(&m->types, type, named_struct_type);
 			}
 
 			lbStructFieldRemapping field_remapping = {};
@@ -2443,7 +2695,6 @@ gb_internal LLVMTypeRef lb_type_internal(lbModule *m, Type *type) {
 			}
 
 			i64 prev_offset = 0;
-			bool requires_packing = type->Struct.is_packed;
 			for (i32 field_index : struct_fields_index_by_increasing_offset(temporary_allocator(), type)) {
 				Entity *field = type->Struct.fields[field_index];
 				i64 offset = type->Struct.offsets[field_index];
@@ -2468,7 +2719,17 @@ gb_internal LLVMTypeRef lb_type_internal(lbModule *m, Type *type) {
 				// so check the alignment of all fields to see if packing is required.
 				requires_packing = requires_packing || ((offset % type_align_of(field_type)) != 0);
 
-				array_add(&fields, lb_type(m, field_type));
+				LLVMTypeRef field_llvm_type = lb_type(m, field_type);
+
+				// `max_simd_align` can cap a member below what LLVM gives the lowered
+				// type. Unpacked, LLVM lays the struct out by its own alignment and the
+				// member moves: `struct{i8, #simd[8]f32}` is 48 bytes here and 64 to
+				// LLVM on every target that caps the vector at 16.
+				i64 natural_align = lb_llvm_natural_alignof(field_llvm_type);
+				requires_packing = requires_packing || ((offset % natural_align) != 0) ||
+				                   natural_align > full_type_align;
+
+				array_add(&fields, field_llvm_type);
 
 				prev_offset = offset + type_size_of(field->type);
 			}
@@ -2482,7 +2743,13 @@ gb_internal LLVMTypeRef lb_type_internal(lbModule *m, Type *type) {
 				GB_ASSERT(fields[i] != nullptr);
 			}
 
-			LLVMTypeRef struct_type = LLVMStructTypeInContext(ctx, fields.data, cast(unsigned)fields.count, requires_packing);
+			LLVMTypeRef struct_type = nullptr;
+			if (is_soa_struct) {
+				struct_type = named_struct_type;
+				LLVMStructSetBody(struct_type, fields.data, cast(unsigned)fields.count, requires_packing);
+			} else {
+				struct_type = LLVMStructTypeInContext(ctx, fields.data, cast(unsigned)fields.count, requires_packing);
+			}
 			map_set(&m->struct_field_remapping, cast(void *)struct_type, field_remapping);
 			map_set(&m->struct_field_remapping, cast(void *)type, field_remapping);
 			#if 0
@@ -2509,8 +2776,9 @@ gb_internal LLVMTypeRef lb_type_internal(lbModule *m, Type *type) {
 				LLVMTypeRef fields[] = {lb_type(m, type->Union.variants[0])};
 				return LLVMStructTypeInContext(ctx, fields, gb_count_of(fields), false);
 			}
+			bool is_packed = false;
 
-			auto fields = array_make<LLVMTypeRef>(temporary_allocator(), 0, 3);
+			auto fields = array_make<LLVMTypeRef>(temporary_allocator(), 0, 4);
 			if (is_type_union_maybe_pointer(type)) {
 				LLVMTypeRef variant = lb_type(m, type->Union.variants[0]);
 				array_add(&fields, variant);
@@ -2526,6 +2794,7 @@ gb_internal LLVMTypeRef lb_type_internal(lbModule *m, Type *type) {
 					LLVMTypeRef padding_type = lb_type_padding_filler(m, padding, align);
 					array_add(&fields, padding_type);
 				}
+				is_packed = true;
 			} else {
 				LLVMTypeRef block_type = lb_type_internal_union_block_type(m, type);
 
@@ -2538,9 +2807,10 @@ gb_internal LLVMTypeRef lb_type_internal(lbModule *m, Type *type) {
 					LLVMTypeRef padding_type = lb_type_padding_filler(m, padding, align);
 					array_add(&fields, padding_type);
 				}
+				is_packed = true;
 			}
 			
-			return LLVMStructTypeInContext(ctx, fields.data, cast(unsigned)fields.count, false);
+			return LLVMStructTypeInContext(ctx, fields.data, cast(unsigned)fields.count, is_packed);
 		}
 		break;
 
@@ -2651,6 +2921,13 @@ gb_internal LLVMTypeRef lb_type(lbModule *m, Type *type) {
 	m->internal_type_level += 1;
 	llvm_type = lb_type_internal(m, type);
 	m->internal_type_level -= 1;
+
+	// {
+	// 	i64 tsz = type_size_of(type);
+	// 	i64 lsz = lb_sizeof(llvm_type);
+	// 	GB_ASSERT_MSG(tsz == lsz, "%s %lld vs %lld %s", type_to_string(type), cast(long long)tsz, cast(long long)lsz, LLVMPrintTypeToString(llvm_type));
+	// }
+
 	if (m->internal_type_level == 0) {
 		map_set(&m->types, type, llvm_type);
 	}
@@ -3589,7 +3866,7 @@ gb_internal lbValue lb_generate_global_array(lbModule *m, Type *elem_type, i64 c
 	g.type = alloc_type_pointer(t);
 	LLVMSetInitializer(g.value, LLVMConstNull(lb_type(m, t)));
 	LLVMSetLinkage(g.value, LLVMPrivateLinkage);
-	// LLVMSetUnnamedAddress(g.value, LLVMGlobalUnnamedAddr);
+	LLVMSetUnnamedAddress(g.value, LLVMGlobalUnnamedAddr);
 	string_map_set(&m->members, s, g);
 	return g;
 }
