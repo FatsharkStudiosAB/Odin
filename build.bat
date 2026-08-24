@@ -53,6 +53,13 @@ if "%1" == "1" (
 	set release_mode=0
 )
 
+:: Portable Debug = 1
+if /I "%~1" == "portable-debug" (
+	set portable_debug=1
+) else (
+	set portable_debug=0
+)
+
 :: Normal = 0, CI Nightly = 1
 if "%2" == "1" (
 	set nightly=1
@@ -84,7 +91,11 @@ set rc_flags=-nologo "-DGIT_SHA=%GIT_SHA% -DVP=dev-%V1%-%V2%:%GIT_SHA% nologo -D
 if %nightly% equ 1 set compiler_defines=%compiler_defines% -DNIGHTLY
 
 if %release_mode% EQU 0 ( rem Debug
-	set compiler_flags=%compiler_flags% -Od -MDd -Z7
+	if %portable_debug% EQU 1 (
+		set compiler_flags=%compiler_flags% -Od -MT -Z7
+	) else (
+		set compiler_flags=%compiler_flags% -Od -MDd -Z7
+	)
 	set rc_flags=%rc_flags% -D_DEBUG
 ) else ( rem Release
 	set compiler_flags=%compiler_flags% -O2 -MT -Z7
@@ -107,12 +118,16 @@ set libs= ^
 set odin_res=misc\odin.res
 set odin_rc=misc\odin.rc
 
-set linker_flags= -incremental:no -opt:ref -subsystem:console -MANIFEST:EMBED
+set linker_flags= -incremental:no -subsystem:console -MANIFEST:EMBED
 
 if %release_mode% EQU 0 ( rem Debug
-	set linker_flags=%linker_flags% -debug /NATVIS:src\odin_compiler.natvis
+	if %portable_debug% EQU 1 (
+		set linker_flags=%linker_flags% -debug:full -opt:noref -opt:noicf /NATVIS:src\odin_compiler.natvis
+	) else (
+		set linker_flags=%linker_flags% -debug -opt:ref /NATVIS:src\odin_compiler.natvis
+	)
 ) else ( rem Release
-	set linker_flags=%linker_flags% -debug
+	set linker_flags=%linker_flags% -debug -opt:ref
 )
 
 set compiler_settings=%compiler_includes% %compiler_flags% %compiler_warnings% %compiler_defines%
